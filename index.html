@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CPR Sensor Bluetooth</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="manifest" href="manifest.json">
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    background: #ffffff;
+    text-align: center;
+    padding: 20px;
+  }
+  h2 { color: #2e7d32; }
+  .btn {
+    padding: 10px 20px;
+    margin: 5px;
+    font-size: 16px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  #connectBtn { background: #388e3c; color: white; }
+  #disconnectBtn { background: #d32f2f; color: white; display: none; }
+  #startTrainingBtn { background: #388e3c; color: white; display: none; }
+  #stopTrainingBtn { background: #f57c00; color: white; display: none; }
+  #downloadBtn { background: #fbc02d; color: black; display: none; }
+  .status-dot {
+    display: inline-block;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: #d32f2f;
+    margin-left: 8px;
+  }
+  .gauge-container {
+    margin-top: 40px;
+    width: 300px; height: 180px;
+    margin-left: auto; margin-right: auto;
+    position: relative;
+  }
+  svg { width: 100%; height: 100%; }
+  .needle {
+    stroke-width: 6;
+    transform-origin: 150px 150px;
+    transition: transform 0.6s ease-in-out, stroke 0.3s ease-in-out;
+  }
+  .needle-shadow {
+    stroke: rgba(0,0,0,0.2);
+    stroke-width: 8;
+    transform-origin: 150px 150px;
+  }
+  .center-cap {
+    fill: #37474f;
+  }
+  #traineeName {
+    padding: 8px;
+    font-size: 14px;
+    display: none;
+  }
+</style>
+</head>
+<body>
+
+<h2>CPR Sensor <span class="status-dot" id="statusDot"></span></h2>
+
+<button id="connectBtn" class="btn">Connect</button>
+<button id="disconnectBtn" class="btn">Disconnect</button>
+<br>
+<input type="text" id="traineeName" placeholder="Enter trainee name">
+<button id="startTrainingBtn" class="btn">Start Training</button>
+<button id="stopTrainingBtn" class="btn">Stop Training</button>
+<button id="downloadBtn" class="btn">Download CSV</button>
+
+<div class="gauge-container">
+  <svg viewBox="0 0 300 160">
+    <!-- Red zone: 0–80 -->
+    <path d="M 30 150 A 120 120 0 0 1 105 40" stroke="#d32f2f" stroke-width="15" fill="none"/>
+    <!-- Yellow zone: 80–100 -->
+    <path d="M 105 40 A 120 120 0 0 1 195 40" stroke="#fbc02d" stroke-width="15" fill="none"/>
+    <!-- Green zone: 100–120 -->
+    <path d="M 195 40 A 120 120 0 0 1 270 150" stroke="#388e3c" stroke-width="15" fill="none"/>
+    <!-- Tick marks -->
+    <g id="ticks"></g>
+    <!-- Needle shadow -->
+    <line id="needleShadow" x1="150" y1="150" x2="150" y2="30" class="needle-shadow"/>
+    <!-- Needle -->
+    <line id="needle" x1="150" y1="150" x2="150" y2="30" class="needle"/>
+    <!-- Center cap -->
+    <circle cx="150" cy="150" r="6" class="center-cap"/>
+  </svg>
+</div>
+
+<script>
+const SERVICE_UUID = '6e400001-c352-11e5-953d-0002a5d5c51b';
+const CHARACTERISTIC_UUID = '6e400003-c352-11e5-953d-0002a5d5c51b';
+
+let device, characteristic;
+let sessionData = [];
+let traineeName = "";
+let logging = false;
+
+const connectBtn = document.getElementById("connectBtn");
+const disconnectBtn = document.getElementById("disconnectBtn");
+const startTrainingBtn = document.getElementById("startTrainingBtn");
+const stopTrainingBtn = document.getElementById("stopTrainingBtn");
+const downloadBtn = document.getElementById("downloadBtn");
+const traineeNameInput = document.getElementById("traineeName");
+const statusDot = document.getElementById("statusDot");
+const needle = document.getElementById("needle");
+const needleShadow = document.getElementById("needleShadow");
+const ticksGroup = document.getElementById("ticks");
+
+function drawTicks() {
+  for (let i = 0; i <= 120; i += 10) {
+    const angle = (i/120) * 180 - 90;
+    const rad = angle * Math.PI / 180;
+    const x1 = 150 + 110 * Math.cos(rad);
+    const y1 = 150 + 110 * Math.sin(rad);
+    const x2 = 150 + 90 * Math.cos(rad);
+    const y2 = 150 + 90 * Math.sin(rad);
+    const tick = document.createElementNS("http://www.w3.org/2000/svg","line");
+    tick.setAttribute("x1", x1);
+    tick.setAttribute("y1", y1);
+    tick.setAttribute("x2", x2);
+    tick.setAttribute("y2", y2);
+    tick.setAttribute("stroke", "#37474f");
+    tick.setAttribute("stroke-width", "2");
+    ticksGroup.appendChild(tick);
+
+    const tx = 150 + 75 * Math.cos(rad);
+    const ty = 150 + 75 * Math.sin(rad);
+    const label = document.createElementNS("http://www.w3.org/2000/svg","text");
+    label.setAttribute("x", tx);
+    label.setAttribute("y", ty+4);
+    label.setAttribute("font-size", "12");
+    label.setAttribute("fill", "#37474f");
+    label.setAttribute("text-anchor", "middle");
+    label.textContent = i;
+    ticksGroup.appendChild(label);
+  }
+}
+
+function updateNeedle(rate) {
+  const maxRate = 120;
+  const limitedRate = Math.min(rate, maxRate);
+  const angle = (limitedRate / maxRate) * 180 - 90;
+  needle.style.transform = `rotate(${angle}deg)`;
+  needleShadow.style.transform = `rotate(${angle}deg)`;
+
+  if (rate >= 100 && rate <= 120) {
+    needle.style.stroke = "#388e3c";
+  } else if (rate >= 80 && rate < 100) {
+    needle.style.stroke = "#fbc02d";
+  } else {
+    needle.style.stroke = "#d32f2f";
+  }
+}
+
+connectBtn.addEventListener("click", async () => {
+  try {
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: "Proteus" }],
+      optionalServices: [SERVICE_UUID]
+    });
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE_UUID);
+    characteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+
+    characteristic.addEventListener("characteristicvaluechanged", event => {
+      const value = new TextDecoder().decode(event.target.value).trim();
+      const match = value.match(/CPR RATE:\s*([\d.]+)/);
+      if (match) {
+        const rate = parseFloat(match[1]);
+        if (logging) {
+          sessionData.push({ trainee: traineeName, time: new Date().toISOString(), rate });
+        }
+        updateNeedle(rate);
+      }
+    });
+    await characteristic.startNotifications();
+
+    statusDot.style.background = "#388e3c";
+    connectBtn.style.display = "none";
+    disconnectBtn.style.display = "inline-block";
+    traineeNameInput.style.display = "inline-block";
+    startTrainingBtn.style.display = "inline-block";
+  } catch (error) {
+    alert("Bluetooth Error: " + error.message);
+  }
+});
+
+startTrainingBtn.addEventListener("click", () => {
+  traineeName = traineeNameInput.value.trim();
+  if (!traineeName) {
+    alert("Please enter trainee name before starting.");
+    return;
+  }
+  logging = true;
+  sessionData = [];
+  traineeNameInput.style.display = "none";
+  startTrainingBtn.style.display = "none";
+  stopTrainingBtn.style.display = "inline-block";
+});
+
+stopTrainingBtn.addEventListener("click", () => {
+  logging = false;
+  stopTrainingBtn.style.display = "none";
+  downloadBtn.style.display = "inline-block";
+});
+
+disconnectBtn.addEventListener("click", async () => {
+  if (device && device.gatt.connected) {
+    await device.gatt.disconnect();
+  }
+  statusDot.style.background = "#d32f2f";
+  connectBtn.style.display = "inline-block";
+  disconnectBtn.style.display = "none";
+  traineeNameInput.style.display = "none";
+  startTrainingBtn.style.display = "none";
+  stopTrainingBtn.style.display = "none";
+  downloadBtn.style.display = "none";
+});
+
+downloadBtn.addEventListener("click", () => {
+  if (sessionData.length === 0) {
+    alert("No data to download");
+    return;
+  }
+  let csv = "Trainee Name,Time,CPR Rate\n";
+  sessionData.forEach(row => {
+    csv += `${row.trainee},${row.time},${row.rate}\n`;
+  });
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${traineeName}_cpr_session.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+drawTicks();
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('service-worker.js')
+    .then(() => console.log('Service Worker Registered'));
+}
+</script>
+</body>
+</html>
